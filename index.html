@@ -58,25 +58,12 @@ button.row{display:flex;align-items:center;gap:8px;background:#f4eee0;color:var(
 @keyframes pop{50%{transform:scale(1.3) rotate(6deg)}}
 .shake{animation:shake .4s}
 @keyframes shake{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
-#print{display:none}
 @media(prefers-reduced-motion:reduce){*{animation:none!important}}
-@media print{
- @page{size:A4;margin:8mm}
- body{background:#fff;color:#000}
- body>*:not(#print){display:none!important}
- #print{display:block}
- .cards{display:grid;grid-template-columns:repeat(3,1fr);page-break-after:always}
- .pc{border:1px dashed #666;height:27mm;display:flex;flex-direction:column;align-items:center;justify-content:center;break-inside:avoid}
- .pc b{font-size:24pt}.pc span{font-size:11pt;color:#444}
- .board{background:#fff;display:grid;grid-template-columns:repeat(3,1fr);gap:6mm;padding:0}
- .tile{border:1px solid #000;height:56mm;aspect-ratio:auto;break-inside:avoid}
- .tile svg{width:44mm;height:44mm;filter:brightness(0)!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
- .tile .lb{display:none}
-}
 </style></head><body>
 <header>
  <h1>🍎 Fruit Words</h1>
  <div class="hs">
+  <label>โหมด <select id="mode"><option value="deal">แจกคำศัพท์ก่อน</option><option value="direct">สุ่มเลย (ข้ามการแจก)</option></select></label>
   <label>ค้างคำ <select id="hold"><option>3</option><option selected>4</option><option>5</option></select> วินาที</label>
   <label><input type="checkbox" id="showTh" checked> คำแปลไทย</label>
   <label><input type="checkbox" id="shadow" checked> แสดงเงา</label>
@@ -90,16 +77,15 @@ button.row{display:flex;align-items:center;gap:8px;background:#f4eee0;color:var(
    <div id="w">?</div>
    <div id="th"></div>
    <div id="barw"><div id="bar"></div></div>
-   <div id="msg">กด “แจกคำศัพท์” เพื่อเริ่ม</div>
+   <div id="msg"></div>
    <div class="btns">
-    <button class="p" id="bDeal">▶ แจกคำศัพท์</button>
-    <button class="g" id="bSkip" disabled>ข้าม ⏭</button>
-    <button id="bPick" disabled>🎲 สุ่มเรียกนักเรียน</button>
+    <button class="p" id="bStart">▶ เริ่มสุ่ม</button>
+    <button id="bStop" disabled>⏹ หยุดสุ่ม</button>
+    <button class="g" id="bSkip" disabled>ข้ามการค้างคำ ⏭</button>
     <button class="g" id="bReveal" disabled>เฉลย</button>
    </div>
    <div class="btns">
     <button class="g" id="bReset">↺ เริ่มใหม่</button>
-    <button class="g" id="bPrint">🖨 พิมพ์สื่อ</button>
    </div>
   </div>
   <div id="grid"></div>
@@ -112,7 +98,6 @@ button.row{display:flex;align-items:center;gap:8px;background:#f4eee0;color:var(
  </section>
  <section class="board" id="board"></section>
 </main>
-<div id="print"></div>
 <script>
 const G=(pts,f)=>pts.map(p=>f(p)).join('');
 const F=[
@@ -175,7 +160,8 @@ const SFX={
  done:()=>seq([392,523,659],.18,'triangle',.18,.1)};
 document.addEventListener('click',e=>{if(e.target.closest('button'))SFX.click()});
 
-let order=[],phase='idle',busy=false,tk=0,done=new Set(),cur=null,skip=null,N=0;
+let order=[],phase='idle',busy=false,tk=0,done=new Set(),cur=null,skip=null,N=0,spinning=false,holding=false,stopFlag=false,dealIdx=0;
+const mode=()=>$('#mode').value;
 
 function renderSet(){
  $('#set').innerHTML=F.map(f=>`<button class="row ${on[f.id]?'':'off'}" data-id="${f.id}" aria-pressed="${on[f.id]}"><span class="ic">${svgOf(f)}</span><span>${f.en}<small>${f.th}</small></span><span class="mk">${on[f.id]?'✓':'＋'}</span></button>`).join('');
@@ -185,63 +171,84 @@ $('#set').addEventListener('click',e=>{const b=e.target.closest('.row');if(!b)re
  on[id]=!on[id];reset()});
 $('#bAll').onclick=()=>{F.forEach(f=>on[f.id]=true);reset()};
 $('#shadow').onchange=()=>$('#board').classList.toggle('lit',!$('#shadow').checked);
+$('#mode').onchange=()=>reset();
 
 function reset(){
- tk++;busy=false;phase='idle';order=[];done=new Set();cur=null;N=act().length;
+ tk++;busy=spinning=holding=stopFlag=false;order=[];done=new Set();cur=null;dealIdx=0;N=act().length;
+ $('#w').classList.remove('spin');
  $('#grid').innerHTML=Array.from({length:N},(_,i)=>`<div class="chip" id="c${i}"><b>${i+1}</b><i></i></div>`).join('');
  $('#board').innerHTML=act().map(f=>`<div class="tile" data-id="${f.id}">${svgOf(f)}<span class="lb">${f.en}</span></div>`).join('');
  $('#board').classList.toggle('lit',!$('#shadow').checked);
- $('#no').innerHTML=`พร้อมแจกให้นักเรียน <b>${N}</b> คน`;
- $('#w').textContent='?';$('#th').textContent='';$('#bar').style.width='0';
- $('#msg').textContent='กด “แจกคำศัพท์” เพื่อเริ่ม';renderSet();btns()}
+ $('#w').textContent='?';$('#th').textContent='';$('#bar').style.transition='none';$('#bar').style.width='0';
+ if(mode()==='direct'){
+  order=sh(act().map(f=>f.id));phase='pick';
+  $('#no').innerHTML=`พร้อมสุ่มนักเรียน <b>${N}</b> คน`;
+  $('#msg').textContent='กด “เริ่มสุ่ม” แล้วกด “หยุดสุ่ม” เพื่อเลือกนักเรียน จะได้คำศัพท์ทันที'}
+ else{
+  phase='idle';
+  $('#no').innerHTML=`พร้อมแจกให้นักเรียน <b>${N}</b> คน`;
+  $('#msg').textContent='กด “เริ่มสุ่ม” แล้วกด “หยุดสุ่ม” เพื่อแจกคำศัพท์ให้นักเรียนเลขที่ 1'}
+ renderSet();btns()}
 function btns(){
- $('#bDeal').disabled=phase!=='idle'||busy;
- $('#bSkip').disabled=!(busy&&phase==='deal');
- $('#bPick').disabled=!(phase==='pick'&&!busy&&cur===null&&done.size<N);
+ const pickDone=phase==='pick'&&(cur!==null||done.size>=N);
+ $('#bStart').disabled=busy||pickDone;
+ $('#bStart').textContent=phase==='pick'?'▶ เริ่มสุ่มนักเรียน':'▶ เริ่มสุ่มคำศัพท์';
+ $('#bStop').disabled=!spinning;
+ $('#bSkip').disabled=!holding;
  $('#bReveal').disabled=cur===null}
 const land=()=>{const e=$('#w');e.classList.remove('land');void e.offsetWidth;e.classList.add('land')};
 const show=i=>{const f=Fm[order[i]];$('#w').textContent=f.en;$('#th').textContent=th()?f.th:'';land();SFX.land()};
-async function spin(gen,fn,ms){const e=$('#w');e.classList.add('spin');const t=Date.now();while(Date.now()-t<ms){fn(gen());SFX.tick();await sleep(70)}e.classList.remove('spin')}
-function hold(ms){const b=$('#bar');b.style.transition='none';b.style.width='100%';void b.offsetWidth;b.style.transition=`width ${ms}ms linear`;b.style.width='0';return new Promise(r=>{skip=r;setTimeout(r,ms)})}
+async function spin(my,fn,min=500){
+ const e=$('#w');e.classList.add('spin');spinning=true;stopFlag=false;btns();
+ const t=Date.now();
+ while((!stopFlag||Date.now()-t<min)&&my===tk){fn();SFX.tick();await sleep(70)}
+ e.classList.remove('spin');spinning=false}
+function hold(ms){const b=$('#bar');b.style.transition='none';b.style.width='100%';void b.offsetWidth;b.style.transition=`width ${ms}ms linear`;b.style.width='0';holding=true;btns();return new Promise(r=>{skip=r;setTimeout(r,ms)})}
 
+async function start(){
+ if(busy)return;
+ if(phase==='pick')return pick();
+ if(phase==='idle'){order=sh(act().map(f=>f.id));phase='deal'}
+ return deal()}
 async function deal(){
- if(busy||phase!=='idle')return;const my=++tk;busy=true;phase='deal';
- order=sh(act().map(f=>f.id));btns();
- const ms=+$('#hold').value*1000,pool=act();
- for(let i=0;i<N;i++){
-  $('#no').innerHTML=`นักเรียนเลขที่ <b>${i+1}</b>`;$('#msg').textContent='จำคำศัพท์ของตัวเองไว้ให้ดี!';
-  await spin(()=>pool[Math.random()*pool.length|0].en,t=>{$('#w').textContent=t;$('#th').textContent=''},900);
-  if(my!==tk)return;show(i);await hold(ms);if(my!==tk)return;
-  $('#c'+i).classList.add('dealt')}
- busy=false;phase='pick';$('#no').innerHTML=`แจกครบ <b>${N}</b> คนแล้ว`;$('#w').textContent='🎉';$('#th').textContent='';
- $('#msg').textContent='กด “สุ่มเรียกนักเรียน” ได้เลย';SFX.win();btns()}
+ const my=tk,i=dealIdx,pool=act();busy=true;btns();
+ $('#no').innerHTML=`นักเรียนเลขที่ <b>${i+1}</b>`;$('#msg').textContent='กำลังสุ่มคำศัพท์… กด “หยุดสุ่ม” เมื่อพร้อม';
+ await spin(my,()=>{$('#w').textContent=pool[Math.random()*pool.length|0].en;$('#th').textContent=''});
+ if(my!==tk)return;
+ show(i);$('#msg').textContent='จำคำศัพท์ของตัวเองไว้ให้ดี!';
+ await hold(+$('#hold').value*1000);holding=false;
+ if(my!==tk)return;
+ $('#c'+i).classList.add('dealt');dealIdx++;busy=false;
+ if(dealIdx>=N){
+  phase='pick';$('#no').innerHTML=`แจกครบ <b>${N}</b> คนแล้ว`;$('#w').textContent='🎉';$('#th').textContent='';
+  $('#msg').textContent='กด “เริ่มสุ่มนักเรียน” ได้เลย';SFX.win()}
+ else{$('#w').textContent='?';$('#th').textContent='';$('#msg').textContent=`กด “เริ่มสุ่ม” เพื่อแจกคำศัพท์ให้นักเรียนเลขที่ ${dealIdx+1}`;SFX.done()}
+ btns()}
 async function pick(){
  const left=[...Array(N).keys()].filter(i=>!done.has(i));
  if(!left.length||busy||cur!==null)return;
- const my=tk;busy=true;btns();const win=left[Math.random()*left.length|0];
- await spin(()=>left[Math.random()*left.length|0]+1,n=>{$('#no').innerHTML=`นักเรียนเลขที่ <b>${n}</b>`;$('#w').textContent='?'},1500);
- if(my!==tk)return;cur=win;busy=false;
+ const my=tk,pool=act();busy=true;btns();
+ $('#w').textContent='?';$('#th').textContent='';$('#msg').textContent='กำลังสุ่มนักเรียน… กด “หยุดสุ่ม” เมื่อพร้อม';
+ await spin(my,()=>{$('#no').innerHTML=`นักเรียนเลขที่ <b>${left[Math.random()*left.length|0]+1}</b>`;$('#w').textContent=mode()==='direct'?pool[Math.random()*pool.length|0].en:'?'});
+ if(my!==tk)return;
+ const win=left[Math.random()*left.length|0];cur=win;busy=false;
  $('#no').innerHTML=`นักเรียนเลขที่ <b>${win+1}</b>`;show(win);
  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('cur'));$('#c'+win).classList.add('cur');
- $('#msg').textContent='ออกมาแปะคำศัพท์บนผลไม้ แล้วครูแตะผลไม้ที่นักเรียนแปะ';btns()}
+ $('#msg').textContent=mode()==='direct'?'ได้คำศัพท์แล้ว! ออกมาเลือกผลไม้เลย แล้วครูแตะผลไม้ที่นักเรียนเลือก':'ออกมาแปะคำศัพท์บนผลไม้ แล้วครูแตะผลไม้ที่นักเรียนแปะ';
+ btns()}
 function finish(ok){
  const id=order[cur],t=document.querySelector(`.tile[data-id="${id}"]`);
  t.classList.remove('done');void t.offsetWidth;t.classList.add('done');
  const c=$('#c'+cur);c.classList.remove('cur','dealt');c.classList.add('ok');c.querySelector('i').textContent=Fm[id].en;
  done.add(cur);cur=null;
- $('#msg').textContent=done.size===N?'🏆 ครบทุกคนแล้ว เก่งมาก!':(ok?'✅ ถูกต้อง! เก่งมาก':'เฉลยให้แล้ว ลองจำไว้นะ');
+ $('#msg').textContent=done.size===N?'🏆 ครบทุกคนแล้ว เก่งมาก!':(ok?'✅ ถูกต้อง! เก่งมาก กด “เริ่มสุ่มนักเรียน” คนต่อไป':'เฉลยให้แล้ว ลองจำไว้นะ');
  done.size===N?SFX.win():(ok?SFX.good():SFX.reveal());btns()}
 $('#board').addEventListener('click',e=>{
  const t=e.target.closest('.tile');if(!t||cur===null||busy||t.classList.contains('done'))return;
  if(t.dataset.id===order[cur])return finish(true);
  t.classList.add('bad');const b=$('#board');b.classList.remove('shake');void b.offsetWidth;b.classList.add('shake');
  SFX.bad();$('#msg').textContent='❌ ยังไม่ใช่ ลองใหม่อีกครั้ง';setTimeout(()=>t.classList.remove('bad'),600)});
-$('#bDeal').onclick=deal;$('#bSkip').onclick=()=>skip&&skip();$('#bPick').onclick=pick;
+$('#bStart').onclick=start;$('#bStop').onclick=()=>{stopFlag=true};$('#bSkip').onclick=()=>skip&&skip();
 $('#bReveal').onclick=()=>cur!==null&&finish(false);$('#bReset').onclick=reset;
-$('#bPrint').onclick=()=>{
- const cards=act().map(f=>`<div class="pc"><b>${f.en}</b>${th()?`<span>${f.th}</span>`:''}</div>`).join('');
- const tiles=act().map(f=>`<div class="tile">${svgOf(f)}</div>`).join('');
- $('#print').innerHTML=`<div class="cards">${cards}</div><div class="board">${tiles}</div>`;
- window.print()};
 reset();
 </script></body></html>
